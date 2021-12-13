@@ -1,4 +1,4 @@
-#import os
+import os
 import pyodbc as sql
 import numpy as np
 import pandas as pd
@@ -27,7 +27,8 @@ def replace_tags_board(board_san):
 12 rows for each distinct piece type, 1 row for additional variables like whose move and castling priviliges
 Since FEN's are order starting at the 8th rank from White's point of view, logically makes more sense to order arrays a8-h1 instead of a1-h8
 """
-def convert_fen(fen): # 1 x 832 array
+def convert_fen(inp_str): # 1 x 832 array
+    fen = inp_str.split('|')[0]
     board_state = replace_tags_board(fen.split(' ')[0])
     to_move = fen.split(' ')[1]
     castling = fen.split(' ')[2]
@@ -45,9 +46,13 @@ def convert_fen(fen): # 1 x 832 array
     position_matrix[12][2] = 1 if 'Q' in castling else 0 # White queenside castling
     position_matrix[12][3] = 1 if 'k' in castling else 0 # Black kingside castling
     position_matrix[12][4] = 1 if 'q' in castling else 0 # Black queenside castling
+    #position_matrix[12][5] = inp_str.split('|')[2] # rating
+    #position_matrix[12][6] = inp_str.split('|')[1] # number of candidate moves; currently set to only count moves within 100 CP of best move
+    #for i in range(int(inp_str.split('|')[1])): # set number of elements equal to number of candidate moves; up to 32 candidate moves (through [12][36])
+    #    position_matrix[12][6+i] = 1
+    # position_matrix[12][7] through position_matrix[12][63] still unused
 
     assert position_matrix.shape == (13, 64)
-    #position_matrix_flattened =[item for sublist in position_matrix for item in sublist]
     position_matrix_flattened = np.concatenate(position_matrix)
     return position_matrix_flattened
 
@@ -90,8 +95,6 @@ class MLP:
             self.model = self.build_classification_model()
             self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
                             loss='sparse_categorical_crossentropy', metrics=['sparse_categorical_accuracy'])
-            #self.model.compile(optimizer=tf.keras.optimizers.Ftrl(leaning_rate=lr),
-            #                    loss='sparse_categorical_crossentropy', metrics=['sparse_categorical_accuracy'])
         else:
             self.model = self.build_regression_model()
             self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
@@ -100,19 +103,63 @@ class MLP:
     def build_classification_model(self):
         model = Sequential()
         
-        model.add(Dense(2, input_dim=832))
+        model.add(Dense(64, input_dim=832))
+        model.add(Activation('relu'))
+
+        model.add(Dense(15))
+        model.add(Activation('relu'))
+
+        model.add(Dense(2))
         model.add(Activation('softmax'))
-        model.add(Dropout(0.2))
+
+        """        
+        model.add(Dense(1048, input_dim=832))
+        model.add(Activation('relu'))
+        #model.add(Dropout(0.2))
+
+        model.add(Dense(500))
+        model.add(Activation('relu'))
+        #model.add(Dropout(0.2))
+
+        model.add(Dense(50))
+        model.add(Activation('relu'))
+        #model.add(Dropout(0.2))
+
+        model.add(Dense(2))
+        model.add(Activation('softmax'))
+        """
 
         #model.summary()
         return model
 
     def build_regression_model(self):
         model = Sequential()
-
-        model.add(Dense(1, input_dim=832))
+        
+        
+        model.add(Dense(64, input_dim=832))
         model.add(Activation('relu'))
-        model.add(Dropout(0.2))
+
+        #model.add(Dense(15))
+        #model.add(Activation('relu'))
+
+        model.add(Dense(1))
+        model.add(Activation('relu'))
+        
+        """
+        model.add(Dense(1048, input_dim=832))
+        model.add(Activation('relu'))
+        #model.add(Dropout(0.2))
+
+        model.add(Dense(500))
+        model.add(Activation('relu'))
+        #model.add(Dropout(0.2))
+
+        model.add(Dense(50))
+        model.add(Activation('relu'))
+        #model.add(Dropout(0.2))
+
+        model.add(Dense(1))
+        """        
 
         #model.summary()
         return model
@@ -125,9 +172,7 @@ def main():
     conn = sql.connect('Driver={ODBC Driver 17 for SQL Server};Server=HUNT-PC1;Database=ChessAnalysis;Trusted_Connection=yes;')    
     train_qry = '''
 SELECT
-m.FEN,
-m.Color,
-CASE m.Color WHEN 'White' THEN g.WhiteElo ELSE g.BlackElo END AS Elo,
+CONCAT(m.FEN, '|', m.CandidateMoves, '|', CASE m.Color WHEN 'White' THEN g.WhiteElo ELSE g.BlackElo END) AS Input_String,
 m.CP_Loss,
 CASE m.Move_Rank WHEN 1 THEN 1 ELSE 0 END AS Best_Move
 FROM ControlMoves m
@@ -135,12 +180,12 @@ JOIN ControlGames g ON m.GameID = g.GameID
 WHERE g.CorrFlag = 0
 AND m.GameID <= 20000
 AND m.CP_Loss IS NOT NULL
+AND CAST(m.T1_Eval AS decimal) <= 3.5
+AND m.IsTheory = 0
 '''
     test_qry = '''
 SELECT
-m.FEN,
-m.Color,
-CASE m.Color WHEN 'White' THEN g.WhiteElo ELSE g.BlackElo END AS Elo,
+CONCAT(m.FEN, '|', m.CandidateMoves, '|', CASE m.Color WHEN 'White' THEN g.WhiteElo ELSE g.BlackElo END) AS Input_String,
 m.CP_Loss,
 CASE m.Move_Rank WHEN 1 THEN 1 ELSE 0 END AS Best_Move
 FROM ControlMoves m
@@ -148,50 +193,48 @@ JOIN ControlGames g ON m.GameID = g.GameID
 WHERE g.CorrFlag = 0
 AND m.GameID > 20000
 AND m.CP_Loss IS NOT NULL
+AND CAST(m.T1_Eval AS decimal) <= 3.5
+AND m.IsTheory = 0
 '''
-    """
-    train_set = pd.read_sql(train_qry, conn)
-    test_set = pd.read_sql(test_qry, conn)
-    conn.close()
-
-    train_X = np.array([convert_fen(x) for x in train_set['FEN']])
-    #train_y = np.array(train_set['Best_Move'])
-    train_y = np.array(train_set['CP_Loss'].tolist()).astype(np.float)
-
-    test_X = np.array([convert_fen(x) for x in test_set['FEN']])
-    #test_y = np.array(test_set['Best_Move'].tolist())
-    test_y = np.array(test_set['CP_Loss'].tolist()).astype(np.float)
-    """
     
+    weight_path = r'C:\Users\eehunt\Repository\PositionComplexity\weights'
 
     classification_network = MLP(lr, True)
-    #tmp = classification_network.train(train_X, train_y, test_X, test_y)
-
     acpl_network = MLP(lr, False)
-    #tmp = acpl_network.train(train_X, train_y, test_X, test_y)
 
-    """
-    plt.figure(1)
-    loss = tmp.history['loss']
-    val_loss = tmp.history['val_loss']
-    epochs = range(1, len(loss) + 1)
-    plt.plot(epochs, loss, 'y', label='Training loss')
-    plt.plot(epochs, val_loss, 'r', label='Validation loss')
-    plt.title('Training and validation loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.show()
-    """
+    train = False # True/False whether to retrain model
+    if train:
+        train_set = pd.read_sql(train_qry, conn)
+        test_set = pd.read_sql(test_qry, conn)
+        conn.close()
+        
+        train_X = np.array([convert_fen(x) for x in train_set['Input_String']])
+        train_y_best = np.array(train_set['Best_Move'])
+        train_y_cp = np.array(train_set['CP_Loss'].tolist()).astype(np.float)
 
-    #classification_network.model.save_weights('cat_model_weights.h5')
-    #acpl_network.model.save_weights('reg_model_weights.h5')
+        test_X = np.array([convert_fen(x) for x in test_set['Input_String']])
+        test_y_best = np.array(test_set['Best_Move'].tolist())
+        test_y_cp = np.array(test_set['CP_Loss'].tolist()).astype(np.float)
 
-    classification_network.model.load_weights('cat_model_weights.h5')
-    acpl_network.model.load_weights('reg_model_weights.h5')
+        classification_network.train(train_X, train_y_best, test_X, test_y_best)
+        acpl_network.train(train_X, train_y_cp, test_X, test_y_cp)
 
-    fen_test = '7k/1p6/1Q1p1p2/3NpPqp/4P1b1/1PP4p/1K6/8 b - - 0 1' #random
-    #fen_test = '5rk1/5ppp/2pbr3/1p1n3q/3P2b1/1BPQB1P1/1P1N1P1P/R3R1K1 w - - 0 20' #Marshall after 19...axb5
+        cat_weights_name = os.path.join(weight_path, 'cat_model_weights.h5')
+        reg_weights_name = os.path.join(weight_path, 'reg_model_weights.h5')
+        os.remove(cat_weights_name)
+        os.remove(reg_weights_name)
+
+        classification_network.model.save_weights(cat_weights_name)
+        acpl_network.model.save_weights(reg_weights_name)
+    else:
+        conn.close()
+        cat_weights_name = os.path.join(weight_path, 'cat_model_weights.h5')
+        reg_weights_name = os.path.join(weight_path, 'reg_model_weights.h5')
+        classification_network.model.load_weights(cat_weights_name)
+        acpl_network.model.load_weights(reg_weights_name)
+
+    #fen_test = '2rq1rk1/5pBp/p1bppnp1/1p6/4P1P1/1BN2P2/PPPQ4/2KR3R b - - 0 17' #random
+    fen_test = '5rk1/5ppp/2pbr3/1p1n3q/3P2b1/1BPQB1P1/1P1N1P1P/R3R1K1 w - - 0 20' #Marshall after 19...axb5
     #fen_test = '2kr1b1r/pb1n1p2/5P2/1q1p4/Npp5/4B1P1/1P3PBP/R2Q1RK1 b - - 0 19' #Botvinnik after 19 Be3
     #fen_test = 'r1bqk2r/pppp1Npp/2n2n2/4p3/2B1P3/8/PPPP1bPP/RNBQ1K1R b kq - 0 6' #Traxler after 6 Kf1
     #fen_test = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' #starting position
@@ -199,12 +242,14 @@ AND m.CP_Loss IS NOT NULL
     example_input = example_input.reshape(1, 832)
 
     err_chance = classification_network.model.predict(example_input)
-    #print(err_chance[0][1])
-
     exp_acpl = acpl_network.model.predict(example_input)
-    #print(exp_acpl[0][0])
 
     print("Error Chance:", err_chance[0][1], "Average Error Size:", exp_acpl[0][0])
+
+    """
+    Look into a way to model different rating groups
+    """
+
 
 if __name__ == '__main__':
     main()
