@@ -82,21 +82,36 @@ def convert_array(position_array): # turn array back to FEN
 
 def main():
     conn = sql.connect('Driver={ODBC Driver 17 for SQL Server};Server=HUNT-PC1;Database=ChessAnalysis;Trusted_Connection=yes;')    
-    train_qry = '''
+    class_train_qry = '''
 SELECT
 Input_String,
-CP_Loss,
 Best_Move
 FROM vwPositionComplexity
 WHERE GameID <= 20000
 '''
-    test_qry = '''
+    class_test_qry = '''
 SELECT
 Input_String,
-CP_Loss,
 Best_Move
 FROM vwPositionComplexity
 WHERE GameID > 20000
+'''
+
+    acpl_train_qry = '''
+SELECT
+Input_String,
+CP_Loss
+FROM vwPositionComplexity
+WHERE GameID <= 20000
+AND CP_Loss > 0
+'''
+    acpl_test_qry = '''
+SELECT
+Input_String,
+CP_Loss
+FROM vwPositionComplexity
+WHERE GameID > 20000
+AND CP_Loss > 0
 '''
     
     weight_path = r'C:\Users\eehunt\Repository\PositionComplexity\weights'
@@ -107,32 +122,43 @@ WHERE GameID > 20000
 
     train = False # True/False whether to retrain model
     if train:
-        train_set = pd.read_sql(train_qry, conn)
-        test_set = pd.read_sql(test_qry, conn)
-        conn.close()
+        # classification network
+        class_train_set = pd.read_sql(class_train_qry, conn)
+        class_test_set = pd.read_sql(class_test_qry, conn)
         
-        train_X = np.array([convert_fen(x) for x in train_set['Input_String']])
-        train_y_best = np.array(train_set['Best_Move'])
-        train_y_cp = np.array(train_set['CP_Loss'].tolist()).astype(np.float)
+        train_X = np.array([convert_fen(x) for x in class_train_set['Input_String']])
+        train_y = np.array(class_train_set['Best_Move'])
 
-        test_X = np.array([convert_fen(x) for x in test_set['Input_String']])
-        test_y_best = np.array(test_set['Best_Move'].tolist())
-        test_y_cp = np.array(test_set['CP_Loss'].tolist()).astype(np.float)
+        test_X = np.array([convert_fen(x) for x in class_test_set['Input_String']])
+        test_y = np.array(class_test_set['Best_Move'])
 
-        classification_network.train(train_X, train_y_best, test_X, test_y_best)
-        acpl_network.train(train_X, train_y_cp, test_X, test_y_cp)
+        classification_network.train(train_X, train_y, test_X, test_y)
 
-        cat_weights_name = os.path.join(weight_path, 'cat_model_weights.h5')
-        reg_weights_name = os.path.join(weight_path, 'reg_model_weights.h5')
-        os.remove(cat_weights_name)
-        os.remove(reg_weights_name)
+        # acpl network
+        acpl_train_set = pd.read_sql(acpl_train_qry, conn)
+        acpl_test_set = pd.read_sql(acpl_test_qry, conn)
 
-        classification_network.model.save_weights(cat_weights_name)
-        acpl_network.model.save_weights(reg_weights_name)
+        train_X = np.array([convert_fen(x) for x in acpl_train_set['Input_String']])
+        train_y = np.array(acpl_train_set['CP_Loss'].tolist()).astype(np.float)
+
+        test_X = np.array([convert_fen(x) for x in acpl_test_set['Input_String']])
+        test_y = np.array(acpl_test_set['CP_Loss'].tolist()).astype(np.float)
+
+        acpl_network.train(train_X, train_y, test_X, test_y)
+
+        conn.close()
+
+        class_weights_name = os.path.join(weight_path, 'class_weights.h5')
+        acpl_weights_name = os.path.join(weight_path, 'acpl_weights.h5')
+        os.remove(class_weights_name)
+        os.remove(acpl_weights_name)
+
+        classification_network.model.save_weights(class_weights_name)
+        acpl_network.model.save_weights(acpl_weights_name)
     else:
         conn.close()
-        cat_weights_name = os.path.join(weight_path, 'cat_model_weights.h5')
-        reg_weights_name = os.path.join(weight_path, 'reg_model_weights.h5')
+        cat_weights_name = os.path.join(weight_path, 'class_weights.h5')
+        reg_weights_name = os.path.join(weight_path, 'acpl_weights.h5')
         classification_network.model.load_weights(cat_weights_name)
         acpl_network.model.load_weights(reg_weights_name)
 
