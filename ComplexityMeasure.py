@@ -2,10 +2,7 @@ import os
 import pyodbc as sql
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-from tensorflow.keras.layers import Dense, Activation, Dropout
-from tensorflow.keras import Sequential 
-import matplotlib.pyplot as plt
+from ComplexityModels import MLP as MLP
 
 pieces_order = 'KQRBNPkqrbnp'
 ind = {pieces_order[i]: i for i in range(12)}
@@ -46,11 +43,8 @@ def convert_fen(inp_str): # 1 x 832 array
     position_matrix[12][2] = 1 if 'Q' in castling else 0 # White queenside castling
     position_matrix[12][3] = 1 if 'k' in castling else 0 # Black kingside castling
     position_matrix[12][4] = 1 if 'q' in castling else 0 # Black queenside castling
-    #position_matrix[12][5] = inp_str.split('|')[2] # rating
-    #position_matrix[12][6] = inp_str.split('|')[1] # number of candidate moves; currently set to only count moves within 100 CP of best move
-    #for i in range(int(inp_str.split('|')[1])): # set number of elements equal to number of candidate moves; up to 32 candidate moves (through [12][36])
-    #    position_matrix[12][6+i] = 1
-    # position_matrix[12][7] through position_matrix[12][63] still unused
+    #position_matrix[12][5] = inp_str.split('|')[1] # rating
+    # position_matrix[12][5] through position_matrix[12][63] still unused
 
     assert position_matrix.shape == (13, 64)
     position_matrix_flattened = np.concatenate(position_matrix)
@@ -86,119 +80,28 @@ def convert_array(position_array): # turn array back to FEN
     reconstructed_fen  = reconstructed_fen + ' ' + to_move + ' ' + castling  + ' - 0 0'
     return reconstructed_fen
 
-lr = 0.001
-
-class MLP:
-    def __init__(self, learning_rate, classification): # Input - learning_rate, boolean classification [T] or regression [F]
-        self.learning_rate = learning_rate
-        if classification:
-            self.model = self.build_classification_model()
-            self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
-                            loss='sparse_categorical_crossentropy', metrics=['sparse_categorical_accuracy'])
-        else:
-            self.model = self.build_regression_model()
-            self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
-                                    loss='mse', metrics=['mae', 'mse'])
-
-    def build_classification_model(self):
-        model = Sequential()
-        
-        model.add(Dense(64, input_dim=832))
-        model.add(Activation('relu'))
-
-        model.add(Dense(15))
-        model.add(Activation('relu'))
-
-        model.add(Dense(2))
-        model.add(Activation('softmax'))
-
-        """        
-        model.add(Dense(1048, input_dim=832))
-        model.add(Activation('relu'))
-        #model.add(Dropout(0.2))
-
-        model.add(Dense(500))
-        model.add(Activation('relu'))
-        #model.add(Dropout(0.2))
-
-        model.add(Dense(50))
-        model.add(Activation('relu'))
-        #model.add(Dropout(0.2))
-
-        model.add(Dense(2))
-        model.add(Activation('softmax'))
-        """
-
-        #model.summary()
-        return model
-
-    def build_regression_model(self):
-        model = Sequential()
-        
-        
-        model.add(Dense(64, input_dim=832))
-        model.add(Activation('relu'))
-
-        #model.add(Dense(15))
-        #model.add(Activation('relu'))
-
-        model.add(Dense(1))
-        model.add(Activation('relu'))
-        
-        """
-        model.add(Dense(1048, input_dim=832))
-        model.add(Activation('relu'))
-        #model.add(Dropout(0.2))
-
-        model.add(Dense(500))
-        model.add(Activation('relu'))
-        #model.add(Dropout(0.2))
-
-        model.add(Dense(50))
-        model.add(Activation('relu'))
-        #model.add(Dropout(0.2))
-
-        model.add(Dense(1))
-        """        
-
-        #model.summary()
-        return model
-
-    def train(self, x, y, val_x, val_y):
-        history = self.model.fit(x, y, epochs=1, verbose=1, validation_data=(val_x, val_y))
-        return history
-
 def main():
     conn = sql.connect('Driver={ODBC Driver 17 for SQL Server};Server=HUNT-PC1;Database=ChessAnalysis;Trusted_Connection=yes;')    
     train_qry = '''
 SELECT
-CONCAT(m.FEN, '|', m.CandidateMoves, '|', CASE m.Color WHEN 'White' THEN g.WhiteElo ELSE g.BlackElo END) AS Input_String,
-m.CP_Loss,
-CASE m.Move_Rank WHEN 1 THEN 1 ELSE 0 END AS Best_Move
-FROM ControlMoves m
-JOIN ControlGames g ON m.GameID = g.GameID
-WHERE g.CorrFlag = 0
-AND m.GameID <= 20000
-AND m.CP_Loss IS NOT NULL
-AND CAST(m.T1_Eval AS decimal) <= 3.5
-AND m.IsTheory = 0
+Input_String,
+CP_Loss,
+Best_Move
+FROM vwPositionComplexity
+WHERE GameID <= 20000
 '''
     test_qry = '''
 SELECT
-CONCAT(m.FEN, '|', m.CandidateMoves, '|', CASE m.Color WHEN 'White' THEN g.WhiteElo ELSE g.BlackElo END) AS Input_String,
-m.CP_Loss,
-CASE m.Move_Rank WHEN 1 THEN 1 ELSE 0 END AS Best_Move
-FROM ControlMoves m
-JOIN ControlGames g ON m.GameID = g.GameID
-WHERE g.CorrFlag = 0
-AND m.GameID > 20000
-AND m.CP_Loss IS NOT NULL
-AND CAST(m.T1_Eval AS decimal) <= 3.5
-AND m.IsTheory = 0
+Input_String,
+CP_Loss,
+Best_Move
+FROM vwPositionComplexity
+WHERE GameID > 20000
 '''
     
     weight_path = r'C:\Users\eehunt\Repository\PositionComplexity\weights'
 
+    lr = 0.001
     classification_network = MLP(lr, True)
     acpl_network = MLP(lr, False)
 
@@ -234,8 +137,8 @@ AND m.IsTheory = 0
         acpl_network.model.load_weights(reg_weights_name)
 
     #fen_test = '2rq1rk1/5pBp/p1bppnp1/1p6/4P1P1/1BN2P2/PPPQ4/2KR3R b - - 0 17' #random
-    fen_test = '5rk1/5ppp/2pbr3/1p1n3q/3P2b1/1BPQB1P1/1P1N1P1P/R3R1K1 w - - 0 20' #Marshall after 19...axb5
-    #fen_test = '2kr1b1r/pb1n1p2/5P2/1q1p4/Npp5/4B1P1/1P3PBP/R2Q1RK1 b - - 0 19' #Botvinnik after 19 Be3
+    #fen_test = '5rk1/5ppp/2pbr3/1p1n3q/3P2b1/1BPQB1P1/1P1N1P1P/R3R1K1 w - - 0 20' #Marshall after 19...axb5
+    fen_test = '2kr1b1r/pb1n1p2/5P2/1q1p4/Npp5/4B1P1/1P3PBP/R2Q1RK1 b - - 0 19' #Botvinnik after 19 Be3
     #fen_test = 'r1bqk2r/pppp1Npp/2n2n2/4p3/2B1P3/8/PPPP1bPP/RNBQ1K1R b kq - 0 6' #Traxler after 6 Kf1
     #fen_test = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' #starting position
     example_input = convert_fen(fen_test)
